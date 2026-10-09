@@ -1,0 +1,19 @@
+apiVersion: syntheticmonitoring.ext.grafana.app/v1alpha1
+kind: Check
+metadata:
+  name: edge-ping-1002
+spec:
+  job: edge-ping
+  target: edge.example.com
+  frequency: 60000
+  timeout: 3000
+  enabled: true
+  labels:
+    - name: team
+      value: platform
+  probes:
+    - Atlanta
+  alertSensitivity: none
+  basicMetricsOnly: true
+  settings:
+    ping: {}

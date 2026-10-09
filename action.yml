@@ -1,0 +1,144 @@
+name: "Synthetic Monitoring Check Impact"
+description: "Flags Grafana Synthetic Monitoring checks that this PR's diff may break, suggests checks it may be missing, keeps checks in sync with a checks-as-code source, and comments the result on the PR."
+
+inputs:
+  anthropic-api-key:
+    description: "Anthropic API key used to run the impact/suggestion analysis. Not needed for sync-only runs."
+    required: false
+  grafana-stack-url:
+    description: "Grafana Cloud stack URL, e.g. https://myorg.grafana.net"
+    required: true
+  sm-token:
+    description: "Grafana service-account token (glsa_...). Needs write access when sync-enabled is true, read-only otherwise."
+    required: true
+  github-token:
+    description: "Token used to post/update PR comments. Needs `pull-requests: write`."
+    required: false
+    default: ${{ github.token }}
+  gcx-version:
+    description: "gcx version to install (e.g. v1.5.0), passed through to grafana/setup-gcx. Pin for reproducibility."
+    required: false
+    default: "latest"
+
+  # Scoping — applies to every feature below: which checks they read, suggest against,
+  # or sync. Narrows a fleet down to "checks only in folder X" (sync's checks-dir),
+  # "with label Y" (label-filter), or "hitting domain W" (target-filter).
+  label-filter:
+    description: "Only consider checks with this label, as key=value (comma-separated for multiple, AND semantics)."
+    required: false
+  target-filter:
+    description: "Only consider checks whose target contains this substring (e.g. a domain)."
+    required: false
+
+  check-impact:
+    description: "Flag existing SM checks this PR's diff may break."
+    required: false
+    default: "true"
+  fail-on-affected:
+    description: "Fail the job if any check is flagged as potentially affected. Only applies when check-impact is true."
+    required: false
+    default: "false"
+  suggest-checks:
+    description: "Suggest new SM checks for user-facing flows or endpoints this PR introduces without existing coverage."
+    required: false
+    default: "false"
+
+  # Checks-as-code sync: no preview mode — when enabled, it applies for real every
+  # time it runs. Attach it to whichever workflow trigger should own that (e.g. only
+  # on push to main) if you don't want it mutating checks on every PR.
+  sync-enabled:
+    description: "Sync live checks from a checks-as-code source (checks-dir/checks-file). Creates and updates; see force-delete for deletes."
+    required: false
+    default: "false"
+  checks-dir:
+    description: "Directory of one-YAML-file-per-check desired-state definitions. Mutually exclusive with checks-file."
+    required: false
+  checks-file:
+    description: "Single YAML file (array of check docs) of desired-state definitions. Mutually exclusive with checks-dir."
+    required: false
+  force-delete:
+    description: "Also delete live checks that are missing from the source. Default is append-only (create/update only)."
+    required: false
+    default: "false"
+
+outputs:
+  affected-count:
+    description: "Number of checks flagged as potentially affected (check-impact)."
+    value: ${{ steps.analyze.outputs.affected-count }}
+  total-count:
+    description: "Total number of checks evaluated (check-impact)."
+    value: ${{ steps.analyze.outputs.total-count }}
+
+runs:
+  using: "composite"
+  steps:
+    # Needs the base branch present locally for `git diff origin/<base>...HEAD` in
+    # tools.ts. Only meaningful (and only valid — base.ref is empty otherwise) on a
+    # pull_request event; sync-enabled runs regardless of event (no preview mode).
+    - name: Fetch PR base branch
+      if: github.event_name == 'pull_request'
+      shell: bash
+      run: git fetch --depth=1 origin "${{ github.event.pull_request.base.ref }}"
+
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: "22"
+
+    - name: Install gcx
+      uses: grafana/setup-gcx@v1
+      with:
+        version: ${{ inputs.gcx-version }}
+        github-token: ${{ inputs.github-token }}
+
+    - name: Install action dependencies
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: npm ci
+
+    - name: Run analysis
+      id: analyze
+      if: inputs.check-impact == 'true' || inputs.suggest-checks == 'true'
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      env:
+        GRAFANA_SERVER: ${{ inputs.grafana-stack-url }}
+        GRAFANA_TOKEN: ${{ inputs.sm-token }}
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+        SM_ACTION_BASE_REF: origin/${{ github.event.pull_request.base.ref }}
+        SM_ACTION_LABEL_FILTER: ${{ inputs.label-filter }}
+        SM_ACTION_TARGET_FILTER: ${{ inputs.target-filter }}
+        SM_ACTION_CHECK_IMPACT: ${{ inputs.check-impact }}
+        SM_ACTION_FAIL_ON_AFFECTED: ${{ inputs.fail-on-affected }}
+        SM_ACTION_SUGGEST_CHECKS: ${{ inputs.suggest-checks }}
+      run: npx tsx src/run.ts | tee "$RUNNER_TEMP/sm-action-report.md"
+
+    - name: Post analysis comment
+      if: inputs.check-impact == 'true' || inputs.suggest-checks == 'true'
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: npx tsx src/post-comment.ts "$RUNNER_TEMP/sm-action-report.md"
+
+    - name: Run sync
+      if: inputs.sync-enabled == 'true'
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      env:
+        GRAFANA_SERVER: ${{ inputs.grafana-stack-url }}
+        GRAFANA_TOKEN: ${{ inputs.sm-token }}
+        SM_ACTION_DESIRED_CHECKS_DIR: ${{ inputs.checks-dir }}
+        SM_ACTION_DESIRED_CHECKS_FILE: ${{ inputs.checks-file }}
+        SM_ACTION_LABEL_FILTER: ${{ inputs.label-filter }}
+        SM_ACTION_TARGET_FILTER: ${{ inputs.target-filter }}
+        SM_ACTION_FORCE_DELETE: ${{ inputs.force-delete }}
+      run: npx tsx src/sync.ts | tee "$RUNNER_TEMP/sm-action-sync-report.md"
+
+    - name: Post sync comment
+      if: inputs.sync-enabled == 'true'
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: npx tsx src/post-comment.ts "$RUNNER_TEMP/sm-action-sync-report.md" "<!-- sm-action-sync -->"

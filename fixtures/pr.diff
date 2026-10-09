@@ -1,0 +1,94 @@
+diff --git a/src/components/CheckoutButton.tsx b/src/components/CheckoutButton.tsx
+index 1234567..89abcde 100644
+--- a/src/components/CheckoutButton.tsx
++++ b/src/components/CheckoutButton.tsx
+@@ -6,7 +6,7 @@ export function CheckoutButton({ onSubmit }: CheckoutButtonProps) {
+   return (
+     <button
+       type="submit"
+-      data-testid="checkout-submit"
++      data-testid="place-order"
+       className="btn btn-primary"
+       onClick={onSubmit}
+     >
+diff --git a/src/components/LoginForm.tsx b/src/components/LoginForm.tsx
+index 2234567..99abcde 100644
+--- a/src/components/LoginForm.tsx
++++ b/src/components/LoginForm.tsx
+@@ -8,6 +8,6 @@ export function LoginForm() {
+       <label htmlFor="password">Password</label>
+       <input id="password" name="password" type="password" />
+
+-      <button type="submit">Sign in</button>
++      <button type="submit">Log in</button>
+     </form>
+   );
+ }
+diff --git a/src/api/auth.ts b/src/api/auth.ts
+index 3234567..a9abcde 100644
+--- a/src/api/auth.ts
++++ b/src/api/auth.ts
+@@ -1,6 +1,6 @@
+ export async function login(req: Request, res: Response) {
+   const user = await authenticate(req.body);
+-  const token = signToken(user);
+-  res.json({ token, expiresIn: 3600 });
++  const authToken = signToken(user);
++  res.json({ authToken, expiresIn: 3600 });
+ }
+diff --git a/src/api/health.ts b/src/api/health.ts
+index 4234567..b9abcde 100644
+--- a/src/api/health.ts
++++ b/src/api/health.ts
+@@ -1,3 +1,3 @@
+ export function healthCheck(req: Request, res: Response) {
+-  res.status(200).json({ status: 'ok' });
++  res.status(204).send();
+ }
+diff --git a/src/components/Footer.tsx b/src/components/Footer.tsx
+index abc1234..def5678 100644
+--- a/src/components/Footer.tsx
++++ b/src/components/Footer.tsx
+@@ -4,7 +4,7 @@ export function Footer() {
+   return (
+     <footer>
+-      <p>&copy; 2025 Example Shop. All rights reserved.</p>
++      <p>&copy; 2026 Example Shop. All rights reserved.</p>
+     </footer>
+   );
+ }
+diff --git a/src/utils/formatCurrency.ts b/src/utils/formatCurrency.ts
+index 5234567..c9abcde 100644
+--- a/src/utils/formatCurrency.ts
++++ b/src/utils/formatCurrency.ts
+@@ -1,3 +1,3 @@
+-export function formatCurrency(amountCents: number): string {
+-  return `$${(amountCents / 100).toFixed(2)}`;
++export function formatCurrency(cents: number, locale = 'en-US'): string {
++  return new Intl.NumberFormat(locale, { style: 'currency', currency: 'USD' }).format(cents / 100);
+ }
+diff --git a/src/api/subscriptions.ts b/src/api/subscriptions.ts
+new file mode 100644
+index 0000000..6234567
+--- /dev/null
++++ b/src/api/subscriptions.ts
+@@ -0,0 +1,10 @@
++// New feature: customers can start a recurring Premium subscription, charged via
++// the existing payment provider integration.
++export async function createSubscription(req: Request, res: Response) {
++  const { userId, plan, paymentMethodId } = req.body;
++  const charge = await paymentProvider.charge(paymentMethodId, plan.priceCents);
++  const subscription = await db.subscriptions.insert({ userId, plan: plan.id, chargeId: charge.id });
++  res.status(201).json({ subscriptionId: subscription.id, status: 'active' });
++}
+diff --git a/src/routes.ts b/src/routes.ts
+index 7234567..d9abcde 100644
+--- a/src/routes.ts
++++ b/src/routes.ts
+@@ -10,5 +10,6 @@ export function registerRoutes(app: App) {
+   app.get('/health', healthCheck);
+   app.post('/auth/login', login);
+   app.post('/orders', createOrder);
++  app.post('/api/subscriptions', createSubscription);
+   return app;
+ }

@@ -1,0 +1,28 @@
+# On every PR: flag SM checks the diff may break, and suggest checks for new flows
+# that lack one. Sync is intentionally not enabled here — see sync-apply.yml for that,
+# attached to push-to-main instead, since sync has no preview mode of its own.
+name: SM check impact
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: grafana/synthetic-monitoring-action@v1 # placeholder — replace with the real published ref
+        with:
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          grafana-stack-url: https://myorg.grafana.net
+          sm-token: ${{ secrets.SM_TOKEN }}
+          check-impact: "true"
+          suggest-checks: "true"
+          fail-on-affected: "false" # advisory to start; flip to "true" once trusted
+          # Example scoping — only evaluate the commerce team's checks:
+          # label-filter: team=commerce

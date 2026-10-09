@@ -1,0 +1,30 @@
+# Post-merge: create/update live checks from sm-checks/ to match the repo. Attached
+# to push-to-main (not pull_request) so nothing live changes until a PR has actually
+# merged — sync has no preview mode of its own; it applies for real whenever it runs.
+# Checks live but missing from sm-checks/ are only flagged, never auto-deleted, unless
+# force-delete is turned on.
+name: SM check sync
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: grafana/synthetic-monitoring-action@v1 # placeholder — replace with the real published ref
+        with:
+          grafana-stack-url: https://myorg.grafana.net
+          sm-token: ${{ secrets.SM_TOKEN }}
+          check-impact: "false"
+          suggest-checks: "false"
+          sync-enabled: "true"
+          checks-dir: sm-checks/
+          force-delete: "false"

@@ -1,0 +1,19 @@
+{
+  "name": "synthetic-monitoring-action",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "poc": "tsx src/run.ts"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.99.2",
+    "@earendil-works/pi-ai": "0.99.2",
+    "yaml": "2.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "4.19.2",
+    "typescript": "5.7.2"
+  }
+}

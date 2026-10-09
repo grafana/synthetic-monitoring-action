@@ -1,0 +1,44 @@
+apiVersion: syntheticmonitoring.ext.grafana.app/v1alpha1
+kind: Check
+metadata:
+  name: auth-api-flow-1005
+spec:
+  job: auth-api-flow
+  target: https://api.example.com/auth/login
+  frequency: 120000
+  timeout: 30000
+  enabled: true
+  labels:
+    - name: team
+      value: commerce
+  probes:
+    - Atlanta
+    - Frankfurt
+  alertSensitivity: none
+  basicMetricsOnly: false
+  settings:
+    multihttp:
+      entries:
+        - request:
+            method: POST
+            url: https://api.example.com/auth/login
+          checks:
+            - type: TEXT
+              subject: HTTP_STATUS_CODE
+              condition: EQUALS
+              value: "200"
+          variables:
+            - type: JSON_PATH
+              name: token
+              expression: $.token
+        - request:
+            method: GET
+            url: https://api.example.com/orders
+            headers:
+              - name: Authorization
+                value: Bearer ${token}
+          checks:
+            - type: TEXT
+              subject: HTTP_STATUS_CODE
+              condition: EQUALS
+              value: "200"

@@ -1,0 +1,48 @@
+# Every input turned on, for reference. Real caveat: check-impact/suggest-checks need
+# a PR diff to reason about, so this only works wired to pull_request — and because
+# sync has no preview mode, sync-enabled: true here means it applies for real on
+# EVERY push to the PR branch, not just on merge. That's a deliberate choice some
+# teams may want (fast iteration, no separate merge step) — it is NOT the safer
+# default. For plan-on-PR/apply-on-merge behavior instead, split this into
+# pr-check.yml (impact + suggest only) and sync-apply.yml (sync only, on push to
+# main) — see those two files.
+name: SM check — everything enabled
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: grafana/synthetic-monitoring-action@v1 # placeholder — replace with the real published ref
+        with:
+          # Required
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          grafana-stack-url: https://myorg.grafana.net
+          sm-token: ${{ secrets.SM_TOKEN }}
+
+          # Impact check
+          check-impact: "true"
+          fail-on-affected: "true" # block the PR if a check is flagged
+
+          # Suggest checks
+          suggest-checks: "true"
+
+          # Sync — see the caveat above before copying this as-is
+          sync-enabled: "true"
+          checks-dir: sm-checks/
+          force-delete: "true" # also delete live checks missing from checks-dir
+
+          # Scoping — applies to every feature above
+          label-filter: "team=commerce"
+          target-filter: "shop.example.com"
+
+          # Misc
+          gcx-version: "latest"
