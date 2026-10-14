@@ -78,7 +78,9 @@ runs:
     - name: Fetch PR base branch
       if: github.event_name == 'pull_request'
       shell: bash
-      run: git fetch --depth=1 origin "${{ github.event.pull_request.base.ref }}"
+      env:
+        BASE_REF: ${{ github.event.pull_request.base.ref }}
+      run: git fetch --depth=1 origin "$BASE_REF"
 
     - name: Set up Node
       uses: actions/setup-node@v4
