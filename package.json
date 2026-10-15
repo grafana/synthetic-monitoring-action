@@ -9,7 +9,7 @@
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.99.2",
     "@earendil-works/pi-ai": "0.99.2",
-    "yaml": "2.8.3"
+    "yaml": "2.9.1"
   },
   "devDependencies": {
     "@types/node": "22.20.4",
