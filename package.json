@@ -8,7 +8,7 @@
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "1.1.0",
-    "@earendil-works/pi-ai": "0.99.2",
+    "@earendil-works/pi-ai": "1.1.0",
     "yaml": "2.9.1"
   },
   "devDependencies": {
