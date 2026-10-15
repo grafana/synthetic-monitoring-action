@@ -85,7 +85,7 @@ runs:
     - name: Set up Node
       uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
       with:
-        node-version: "22"
+        node-version: "24"
 
     - name: Install gcx
       uses: grafana/setup-gcx@bdf13767f415608f4c1f1940251ce4c5d34dd36b # v1
