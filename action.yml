@@ -83,12 +83,12 @@ runs:
       run: git fetch --depth=1 origin "$BASE_REF"
 
     - name: Set up Node
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
       with:
         node-version: "22"
 
     - name: Install gcx
-      uses: grafana/setup-gcx@v1
+      uses: grafana/setup-gcx@bdf13767f415608f4c1f1940251ce4c5d34dd36b # v1
       with:
         version: ${{ inputs.gcx-version }}
         github-token: ${{ inputs.github-token }}
