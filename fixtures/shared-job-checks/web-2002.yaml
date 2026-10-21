@@ -1,0 +1,26 @@
+apiVersion: syntheticmonitoring.ext.grafana.app/v1alpha1
+kind: Check
+metadata:
+  name: web-2002
+spec:
+  alertSensitivity: none
+  basicMetricsOnly: true
+  channels:
+    k6: null
+  enabled: true
+  folderUid: ""
+  frequency: 60000
+  job: web
+  probes:
+  - CapeTown
+  - Calgary
+  - Hyderabad
+  settings:
+    http:
+      failIfNotSSL: false
+      failIfSSL: false
+      ipVersion: V4
+      method: GET
+      noFollowRedirects: false
+  target: http://grafana.com
+  timeout: 3000

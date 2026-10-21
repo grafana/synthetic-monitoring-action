@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "poc": "tsx src/run.ts"
+    "poc": "tsx src/run.ts",
+    "test": "node --import tsx --test 'src/**/*.test.ts'",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "1.1.0",

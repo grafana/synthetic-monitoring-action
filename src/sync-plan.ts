@@ -4,6 +4,8 @@ export type ChangeKind = "create" | "update" | "unchanged" | "removed-from-sourc
 
 export interface CheckChange {
   job: string;
+  /** metadata.name — the live name when matched, else the desired one. */
+  name: string;
   kind: ChangeKind;
   desired?: CheckDoc;
   live?: CheckDoc;
@@ -52,31 +54,53 @@ function diffSpecs(live: CheckDoc["spec"], desired: CheckDoc["spec"]): string[] 
   return diff;
 }
 
-// Matches desired <-> live checks by spec.job, the stable identity across the two
-// sides — metadata.name is a "<job>-<id>" composite gcx assigns only once a check
-// exists live, so the desired-state file can't know it in advance.
+// Matches desired <-> live checks by metadata.name first: it's the "<job>-<id>" name
+// gcx assigns once a check exists live, and a source exported from live (gcx checks
+// list -o yaml) carries it. spec.job alone isn't unique — several checks can share a
+// job (e.g. an http, a dns and a scripted check all under job "web"). A desired check
+// whose name isn't live yet (hand-authored, never created) falls back to spec.job, but
+// only when exactly one live check has that job; with several it's ambiguous which one
+// is meant, so this throws rather than guess and update the wrong check or create a
+// duplicate.
 export function planSync(desired: CheckDoc[], live: CheckDoc[]): CheckChange[] {
-  const liveByJob = new Map(live.map((d) => [d.spec.job, d]));
-  const desiredJobs = new Set(desired.map((d) => d.spec.job));
+  const liveByName = new Map(live.map((d) => [d.metadata.name, d]));
+  const liveByJob = new Map<string, CheckDoc[]>();
+  for (const l of live) liveByJob.set(l.spec.job, [...(liveByJob.get(l.spec.job) ?? []), l]);
+  const matched = new Set<CheckDoc>();
   const changes: CheckChange[] = [];
 
   for (const d of desired) {
-    const existing = liveByJob.get(d.spec.job);
+    let existing = liveByName.get(d.metadata.name);
     if (!existing) {
-      changes.push({ job: d.spec.job, kind: "create", desired: d });
+      const sameJob = liveByJob.get(d.spec.job) ?? [];
+      if (sameJob.length > 1) {
+        const names = sameJob.map((l) => l.metadata.name).join(", ");
+        throw new Error(
+          `desired check "${d.metadata.name}" isn't live and its job "${d.spec.job}" is ambiguous (live: ${names}) — set metadata.name to one of them`,
+        );
+      }
+      existing = sameJob[0];
+    }
+    if (!existing) {
+      changes.push({ job: d.spec.job, name: d.metadata.name, kind: "create", desired: d });
       continue;
     }
+    if (matched.has(existing)) {
+      throw new Error(`more than one desired check matches live check "${existing.metadata.name}"`);
+    }
+    matched.add(existing);
+    const name = existing.metadata.name;
     const diff = diffSpecs(existing.spec, d.spec);
     changes.push(
       diff.length > 0
-        ? { job: d.spec.job, kind: "update", desired: d, live: existing, diff }
-        : { job: d.spec.job, kind: "unchanged", desired: d, live: existing },
+        ? { job: d.spec.job, name, kind: "update", desired: d, live: existing, diff }
+        : { job: d.spec.job, name, kind: "unchanged", desired: d, live: existing },
     );
   }
 
   for (const l of live) {
-    if (!desiredJobs.has(l.spec.job)) {
-      changes.push({ job: l.spec.job, kind: "removed-from-source", live: l });
+    if (!matched.has(l)) {
+      changes.push({ job: l.spec.job, name: l.metadata.name, kind: "removed-from-source", live: l });
     }
   }
 
@@ -100,7 +124,7 @@ export function formatSyncResult(results: string[], skipped: CheckChange[]): str
   if (skipped.length > 0) {
     if (results.length > 0) lines.push("");
     lines.push(`${skipped.length} check(s) exist live but aren't in the source (not deleted — force-delete is off):`);
-    for (const c of skipped) lines.push(`- \`${c.job}\` (${c.live!.spec.target})`);
+    for (const c of skipped) lines.push(`- \`${c.job}\` (${c.name}, ${c.live!.spec.target})`);
   }
 
   return lines.join("\n");
