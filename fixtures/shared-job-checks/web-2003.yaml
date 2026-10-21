@@ -1,0 +1,31 @@
+apiVersion: syntheticmonitoring.ext.grafana.app/v1alpha1
+kind: Check
+metadata:
+  name: web-2003
+spec:
+  alertSensitivity: none
+  basicMetricsOnly: true
+  channels:
+    k6: null
+  enabled: true
+  folderUid: ""
+  frequency: 60000
+  job: web
+  probes:
+  - CapeTown
+  - Calgary
+  - Hyderabad
+  settings:
+    dns:
+      ipVersion: V4
+      port: 53
+      protocol: UDP
+      recordType: A
+      server: dns.google
+      validRCodes:
+      - NOERROR
+      validateAdditionalRRS: {}
+      validateAnswerRRS: {}
+      validateAuthorityRRS: {}
+  target: grafana.com
+  timeout: 3000

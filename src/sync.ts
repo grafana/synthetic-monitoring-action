@@ -41,13 +41,13 @@ function applyChanges(changes: CheckChange[], forceDelete: boolean): string[] {
   for (const c of changes) {
     if (c.kind === "create") {
       gcxWriteCheck("create", c.desired!);
-      results.push(`Created \`${c.job}\` (${c.desired!.spec.target})`);
+      results.push(`Created \`${c.job}\` (${c.name}, ${c.desired!.spec.target})`);
     } else if (c.kind === "update") {
       gcxWriteCheck("update", c.desired!, c.live!.metadata.name);
-      results.push(`Updated \`${c.job}\`: ${c.diff!.join("; ")}`);
+      results.push(`Updated \`${c.job}\` (${c.name}): ${c.diff!.join("; ")}`);
     } else if (c.kind === "removed-from-source" && forceDelete) {
       gcxDeleteCheck(c.live!);
-      results.push(`Deleted \`${c.job}\` (${c.live!.spec.target})`);
+      results.push(`Deleted \`${c.job}\` (${c.name}, ${c.live!.spec.target})`);
     }
   }
   return results;
