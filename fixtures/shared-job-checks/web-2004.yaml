@@ -1,0 +1,29 @@
+apiVersion: syntheticmonitoring.ext.grafana.app/v1alpha1
+kind: Check
+metadata:
+  name: web-2004
+spec:
+  alertSensitivity: none
+  basicMetricsOnly: true
+  channels:
+    k6:
+      default: false
+      deprecatedAfter: "2026-07-01T00:00:00Z"
+      id: v1
+      manifest: < 2.0.0
+      name: v1.x
+  enabled: true
+  folderUid: grafana-synthetic-monitoring-app
+  frequency: 300000
+  job: web
+  labels:
+  - name: env
+    value: test
+  probes:
+  - NorthVirginia
+  - Ohio
+  settings:
+    scripted:
+      script: aW1wb3J0IGh0dHAgZnJvbSAnazYvaHR0cCc7CmltcG9ydCB7IGNoZWNrIH0gZnJvbSAnazYnOwoKZXhwb3J0IGRlZmF1bHQgZnVuY3Rpb24gKCkgewogIGNvbnN0IHJlcyA9IGh0dHAuZ2V0KCdodHRwczovL2dyYWZhbmEuY29tJyk7CiAgY2hlY2socmVzLCB7ICdzdGF0dXMgaXMgMjAwJzogKHIpID0+IHIuc3RhdHVzID09PSAyMDAgfSk7Cn0K
+  target: status-check
+  timeout: 15000
