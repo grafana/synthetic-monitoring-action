@@ -2,6 +2,10 @@ name: "Synthetic Monitoring Check Impact"
 description: "Flags Grafana Synthetic Monitoring checks that this PR's diff may break, suggests checks it may be missing, keeps checks in sync with a checks-as-code source, and comments the result on the PR."
 
 inputs:
+  mode:
+    description: "What to run: `pr-analysis` (impact, suggestions and sync, per their inputs below) or `smoke` (run smoke-check-file once against a fresh deploy)."
+    required: false
+    default: "pr-analysis"
   anthropic-api-key:
     description: "Anthropic API key used to run the impact/suggestion analysis. Not needed for sync-only runs."
     required: false
@@ -61,6 +65,37 @@ inputs:
     required: false
     default: "false"
 
+  # Smoke test (mode: smoke): runs one check once via `gcx synthetic-monitoring checks
+  # test` — not saved, no schedule — and fails the job unless every probe succeeds.
+  # Billed like a scheduled execution on each probe.
+  smoke-check-file:
+    description: "YAML file with exactly one check to run once. Required for mode: smoke."
+    required: false
+  smoke-target:
+    description: "Override the check's target, e.g. a PR preview URL."
+    required: false
+  smoke-cache-bust:
+    description: "Added to an http(s) target as a `cb` query param (e.g. github.sha) so probes skip a CDN-cached copy."
+    required: false
+  smoke-body-regexp:
+    description: "Regexp the response body must match (HTTP checks only), appended to the check's failIfBodyNotMatchesRegexp. Also what smoke-wait-timeout waits for."
+    required: false
+  smoke-wait-timeout:
+    description: "Seconds to poll the target until it responds OK (and matches smoke-body-regexp, when set) before running the check. 0 skips the wait."
+    required: false
+    default: "0"
+  smoke-wait-interval:
+    description: "Seconds between polls while waiting."
+    required: false
+    default: "15"
+  smoke-logs-datasource-uid:
+    description: "Loki datasource UID gcx polls for the ad-hoc results, if it can't find one itself."
+    required: false
+  smoke-comment:
+    description: "Post the smoke report as a sticky PR comment on pull_request events. Set to `false` to post your own, using the smoke-report output."
+    required: false
+    default: "true"
+
 outputs:
   affected-count:
     description: "Number of checks flagged as potentially affected (check-impact)."
@@ -68,6 +103,18 @@ outputs:
   total-count:
     description: "Total number of checks evaluated (check-impact)."
     value: ${{ steps.analyze.outputs.total-count }}
+  smoke-result:
+    description: "Path to the raw `checks test` JSON (mode: smoke). Unset if the check never ran."
+    value: ${{ steps.smoke.outputs.smoke-result }}
+  smoke-report:
+    description: "Path to the markdown smoke report (mode: smoke). Unset if the run failed before producing one."
+    value: ${{ steps.smoke.outputs.smoke-report }}
+  adhoc-id:
+    description: "Ad-hoc execution ID of the smoke run, for finding its logs (mode: smoke)."
+    value: ${{ steps.smoke.outputs.adhoc-id }}
+  failed-probes:
+    description: "Comma-separated <probe>=<status> for every probe that didn't succeed (mode: smoke)."
+    value: ${{ steps.smoke.outputs.failed-probes }}
 
 runs:
   using: "composite"
@@ -76,7 +123,7 @@ runs:
     # tools.ts. Only meaningful (and only valid — base.ref is empty otherwise) on a
     # pull_request event; sync-enabled runs regardless of event (no preview mode).
     - name: Fetch PR base branch
-      if: github.event_name == 'pull_request'
+      if: inputs.mode == 'pr-analysis' && github.event_name == 'pull_request'
       shell: bash
       env:
         BASE_REF: ${{ github.event.pull_request.base.ref }}
@@ -100,7 +147,7 @@ runs:
 
     - name: Run analysis
       id: analyze
-      if: inputs.check-impact == 'true' || inputs.suggest-checks == 'true'
+      if: inputs.mode == 'pr-analysis' && (inputs.check-impact == 'true' || inputs.suggest-checks == 'true')
       shell: bash
       working-directory: ${{ github.action_path }}
       env:
@@ -116,7 +163,7 @@ runs:
       run: npx tsx src/run.ts | tee "$RUNNER_TEMP/sm-action-report.md"
 
     - name: Post analysis comment
-      if: inputs.check-impact == 'true' || inputs.suggest-checks == 'true'
+      if: inputs.mode == 'pr-analysis' && (inputs.check-impact == 'true' || inputs.suggest-checks == 'true')
       shell: bash
       working-directory: ${{ github.action_path }}
       env:
@@ -124,7 +171,7 @@ runs:
       run: npx tsx src/post-comment.ts "$RUNNER_TEMP/sm-action-report.md"
 
     - name: Run sync
-      if: inputs.sync-enabled == 'true'
+      if: inputs.mode == 'pr-analysis' && inputs.sync-enabled == 'true'
       shell: bash
       working-directory: ${{ github.action_path }}
       env:
@@ -138,9 +185,44 @@ runs:
       run: npx tsx src/sync.ts | tee "$RUNNER_TEMP/sm-action-sync-report.md"
 
     - name: Post sync comment
-      if: inputs.sync-enabled == 'true'
+      if: inputs.mode == 'pr-analysis' && inputs.sync-enabled == 'true'
       shell: bash
       working-directory: ${{ github.action_path }}
       env:
         GH_TOKEN: ${{ inputs.github-token }}
       run: npx tsx src/post-comment.ts "$RUNNER_TEMP/sm-action-sync-report.md" "<!-- sm-action-sync -->"
+
+    - name: Run smoke test
+      id: smoke
+      if: inputs.mode == 'smoke'
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      env:
+        GRAFANA_SERVER: ${{ inputs.grafana-stack-url }}
+        GRAFANA_TOKEN: ${{ inputs.sm-token }}
+        # Relative to the caller's checkout, not the action's directory.
+        SM_ACTION_SMOKE_CHECK_FILE: ${{ github.workspace }}/${{ inputs.smoke-check-file }}
+        SM_ACTION_SMOKE_TARGET: ${{ inputs.smoke-target }}
+        SM_ACTION_SMOKE_CACHE_BUST: ${{ inputs.smoke-cache-bust }}
+        SM_ACTION_SMOKE_BODY_REGEXP: ${{ inputs.smoke-body-regexp }}
+        SM_ACTION_SMOKE_WAIT_TIMEOUT: ${{ inputs.smoke-wait-timeout }}
+        SM_ACTION_SMOKE_WAIT_INTERVAL: ${{ inputs.smoke-wait-interval }}
+        SM_ACTION_SMOKE_LOGS_DATASOURCE_UID: ${{ inputs.smoke-logs-datasource-uid }}
+        SM_ACTION_SMOKE_REPORT_FILE: ${{ runner.temp }}/sm-action-smoke-report.md
+      run: npx tsx src/smoke-run.ts
+
+    # Runs on failure too — a failed smoke run is exactly what the PR needs to see.
+    # Only on pull_request: on a push there's no PR of its own to comment on.
+    - name: Post smoke comment
+      if: always() && inputs.mode == 'smoke' && inputs.smoke-comment == 'true' && github.event_name == 'pull_request'
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        report="$RUNNER_TEMP/sm-action-smoke-report.md"
+        if [ ! -s "$report" ]; then
+          echo "No smoke report to post."
+          exit 0
+        fi
+        npx tsx src/post-comment.ts "$report" "<!-- sm-action-smoke -->"

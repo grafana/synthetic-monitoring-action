@@ -1,0 +1,31 @@
+# Post-deploy smoke test: once the new build is live, run one SM check once (not
+# saved) from every probe in it and fail the job unless all of them succeed. The page
+# is expected to render the commit SHA (e.g. <meta name="build-sha" content="...">),
+# so the wait and the probes both prove they see this build, not a cached one.
+name: SM smoke test
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ... build and deploy the site here ...
+
+      - uses: grafana/synthetic-monitoring-action@v1 # placeholder — replace with the real published ref
+        with:
+          mode: smoke
+          grafana-stack-url: https://myorg.grafana.net
+          sm-token: ${{ secrets.SM_TOKEN }}
+          smoke-check-file: sm-checks/homepage.yaml
+          smoke-cache-bust: ${{ github.sha }}
+          smoke-body-regexp: build-sha"? content="?${{ github.sha }}
+          smoke-wait-timeout: "600"
