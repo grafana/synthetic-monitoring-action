@@ -1,4 +1,6 @@
-import type { CheckDoc } from "./checks-data.js";
+import { existsSync, globSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { type CheckDoc, parseCheckDocs } from "./checks-data.js";
 
 export interface SmokeOptions {
   /** Replaces spec.target, e.g. a PR preview URL. */
@@ -57,6 +59,61 @@ export function buildSmokeCheck(doc: CheckDoc, opts: SmokeOptions): CheckDoc {
   return smoke;
 }
 
+export interface SmokePlan {
+  check: CheckDoc;
+  /** Overrides that couldn't apply to this check, to surface in the report. */
+  notes: string[];
+}
+
+// The overrides only make sense for HTTP checks, so a mixed set (HTTP + DNS + scripted)
+// can share one set of options. Other checks run as written and say so, instead of
+// failing the whole run. The catch: a DNS check "passes" without proving it saw the new
+// build, hence the note.
+export function planSmokeCheck(doc: CheckDoc, opts: SmokeOptions): SmokePlan {
+  if (doc.spec.settings.http) return { check: buildSmokeCheck(doc, opts), notes: [] };
+
+  const skipped = [
+    opts.target && "smoke-target",
+    opts.cacheBust && "smoke-cache-bust",
+    opts.bodyRegexp && "smoke-body-regexp",
+  ].filter((o): o is string => Boolean(o));
+  const notes = skipped.length
+    ? [`${doc.metadata.name} is not an HTTP check; ran as written, without ${skipped.join(", ")}.`]
+    : [];
+  return { check: buildSmokeCheck(doc, {}), notes };
+}
+
+const GLOB_CHARS = /[*?[\]{}()!]/;
+
+// Expands paths/globs (relative to cwd) into the checks they name. A pattern that matches
+// nothing is an error: it's nearly always a typo, and silently smoke-testing less than
+// intended is the worst outcome for a gate. Each file holds exactly one check.
+export function resolveSmokeChecks(patterns: string[], cwd: string): CheckDoc[] {
+  const files = new Set<string>();
+  for (const pattern of patterns) {
+    const matches = GLOB_CHARS.test(pattern)
+      ? globSync(pattern, { cwd })
+      : existsSync(resolve(cwd, pattern))
+        ? [pattern]
+        : [];
+    if (matches.length === 0) throw new Error(`smoke check pattern "${pattern}" matched no files (in ${cwd})`);
+    for (const m of matches) files.add(m);
+  }
+
+  const byName = new Map<string, string>();
+  const docs: CheckDoc[] = [];
+  for (const file of [...files].sort()) {
+    const found = parseCheckDocs(readFileSync(resolve(cwd, file), "utf8"));
+    if (found.length !== 1) throw new Error(`${file} must contain exactly one check, found ${found.length}`);
+    const doc = found[0]!;
+    const other = byName.get(doc.metadata.name);
+    if (other) throw new Error(`duplicate check name "${doc.metadata.name}" in ${other} and ${file}`);
+    byName.set(doc.metadata.name, file);
+    docs.push(doc);
+  }
+  return docs;
+}
+
 // `checks test` exits 0 even when probes fail, so pass/fail is decided here. No probe
 // results at all counts as a failure: nothing proved the target works.
 export function evaluateProbes(result: CheckTestResult): SmokeEvaluation {
@@ -65,13 +122,15 @@ export function evaluateProbes(result: CheckTestResult): SmokeEvaluation {
   return { passed: total > 0 && failed.length === 0, total, failed };
 }
 
-function heading(name: string): string {
-  return `## Synthetic Monitoring Smoke Test: \`${name}\``;
+const TITLE = "Synthetic Monitoring Smoke Test";
+
+function heading(name: string, level = 2): string {
+  return `${"#".repeat(level)} ${TITLE}: \`${name}\``;
 }
 
-export function formatSmokeReport(name: string, result: CheckTestResult): string {
+export function formatSmokeReport(name: string, result: CheckTestResult, level = 2): string {
   const evaluation = evaluateProbes(result);
-  const lines = [heading(name), "", `Target: ${result.target}`, ""];
+  const lines = [heading(name, level), "", `Target: ${result.target}`, ""];
 
   if (evaluation.total === 0) {
     lines.push("No probe results.");
@@ -124,38 +183,116 @@ export async function waitForBody(url: string, regexp: string | undefined, opts:
 }
 
 export interface RunSmokeInput {
-  check: CheckDoc;
+  checks: CheckDoc[];
   options: SmokeOptions;
-  /** Poll the smoke target before running the check; skipped when absent. */
+  /** Poll each distinct HTTP target before running anything; skipped when absent. */
   wait?: { timeoutMs: number; intervalMs: number };
   runCheckTest: (doc: CheckDoc) => CheckTestResult;
   waitFn?: (url: string, regexp: string | undefined, opts: WaitOptions) => Promise<boolean>;
 }
 
+export interface SmokeOutcome {
+  name: string;
+  /** What was sent to the probes, after overrides. */
+  target: string;
+  notes: string[];
+  result: CheckTestResult;
+  evaluation: SmokeEvaluation;
+}
+
 export interface RunSmokeOutput {
   report: string;
-  evaluation: SmokeEvaluation;
-  /** Absent when the wait timed out and the check never ran. */
-  result?: CheckTestResult;
+  /** Every check ran and every probe of every check succeeded. */
+  passed: boolean;
+  /** Empty when a wait timed out and nothing ran. */
+  outcomes: SmokeOutcome[];
+  /** Targets that never became ready; set only when nothing ran. */
+  notReady?: string[];
+}
+
+function isHttpUrl(target: string): boolean {
+  if (!URL.canParse(target)) return false;
+  const { protocol } = new URL(target);
+  return protocol === "http:" || protocol === "https:";
+}
+
+function resultCell(e: SmokeEvaluation): string {
+  if (e.total === 0) return "failed: no probe results";
+  return e.passed ? `passed (${e.total} probes)` : `failed: ${e.failed.join(", ")}`;
+}
+
+// One check keeps the plain per-check report. Several get a summary table first, then a
+// section per check.
+function formatReport(outcomes: SmokeOutcome[]): string {
+  if (outcomes.length === 1) {
+    const [o] = outcomes as [SmokeOutcome];
+    return [formatSmokeReport(o.name, o.result), ...o.notes.map((n) => `\nNote: ${n}`)].join("\n");
+  }
+
+  const failed = outcomes.filter((o) => !o.evaluation.passed).length;
+  const lines = [`## ${TITLE}`, "", "| Check | Target | Result |", "|---|---|---|"];
+  for (const o of outcomes) lines.push(`| ${o.name} | ${o.target} | ${resultCell(o.evaluation)} |`);
+  lines.push("", failed ? `${failed} of ${outcomes.length} checks failed.` : `All ${outcomes.length} checks passed.`);
+
+  const notes = outcomes.flatMap((o) => o.notes);
+  if (notes.length) lines.push("", ...notes.map((n) => `- ${n}`));
+  for (const o of outcomes) lines.push("", formatSmokeReport(o.name, o.result, 3));
+  return lines.join("\n");
+}
+
+function formatNotReady(checks: CheckDoc[], notReady: string[], timeoutMs: number): string {
+  const seconds = timeoutMs / 1000;
+  if (checks.length === 1) {
+    return [
+      heading(checks[0]!.metadata.name),
+      "",
+      `Target ${notReady[0]} was not ready after ${seconds}s; the check was not run.`,
+    ].join("\n");
+  }
+  return [`## ${TITLE}`, "", `Not ready after ${seconds}s, so no checks were run:`, ...notReady.map((t) => `- ${t}`)].join(
+    "\n",
+  );
 }
 
 export async function runSmoke(input: RunSmokeInput): Promise<RunSmokeOutput> {
-  const smoke = buildSmokeCheck(input.check, input.options);
-  const name = input.check.metadata.name;
+  if (input.checks.length === 0) throw new Error("no checks to smoke test");
+  const plans = input.checks.map((c) => planSmokeCheck(c, input.options));
 
   if (input.wait) {
     const waitFn = input.waitFn ?? waitForBody;
-    const ready = await waitFn(smoke.spec.target, input.options.bodyRegexp, input.wait);
-    if (!ready) {
-      const report = [
-        heading(name),
-        "",
-        `Target ${smoke.spec.target} was not ready after ${input.wait.timeoutMs / 1000}s; the check was not run.`,
-      ].join("\n");
-      return { report, evaluation: { passed: false, total: 0, failed: [] } };
+    const wait = input.wait;
+    // Checks sharing a target share one wait; non-HTTP checks have nothing to poll.
+    const targets = [
+      ...new Set(
+        plans
+          .filter((p) => p.check.spec.settings.http)
+          .map((p) => p.check.spec.target)
+          .filter(isHttpUrl),
+      ),
+    ];
+    const ready = await Promise.all(
+      targets.map(async (target) => ({ target, ok: await waitFn(target, input.options.bodyRegexp, wait) })),
+    );
+    const notReady = ready.filter((r) => !r.ok).map((r) => r.target);
+    if (notReady.length > 0) {
+      return {
+        report: formatNotReady(input.checks, notReady, wait.timeoutMs),
+        passed: false,
+        outcomes: [],
+        notReady,
+      };
     }
   }
 
-  const result = input.runCheckTest(smoke);
-  return { report: formatSmokeReport(name, result), evaluation: evaluateProbes(result), result };
+  const outcomes = plans.map((p): SmokeOutcome => {
+    const result = input.runCheckTest(p.check);
+    return {
+      name: p.check.metadata.name,
+      target: p.check.spec.target,
+      notes: p.notes,
+      result,
+      evaluation: evaluateProbes(result),
+    };
+  });
+  return { report: formatReport(outcomes), passed: outcomes.every((o) => o.evaluation.passed), outcomes };
 }

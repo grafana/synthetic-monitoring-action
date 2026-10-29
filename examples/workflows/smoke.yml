@@ -25,7 +25,13 @@ jobs:
           mode: smoke
           grafana-stack-url: https://myorg.grafana.net
           sm-token: ${{ secrets.SM_TOKEN }}
+          # One check:
           smoke-check-file: sm-checks/homepage.yaml
+          # Or several, one check per file (paths or globs, one per line). The overrides
+          # below apply to the HTTP ones; any other type runs as written:
+          # smoke-check-files: |
+          #   sm-checks/homepage.yaml
+          #   sm-checks/docs-*.yaml
           smoke-cache-bust: ${{ github.sha }}
           smoke-body-regexp: build-sha"? content="?${{ github.sha }}
           smoke-wait-timeout: "600"

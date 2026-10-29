@@ -1,11 +1,10 @@
-import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
-import { type CheckDoc, parseCheckDocs } from "./checks-data.js";
-import { type CheckTestResult, runSmoke } from "./smoke.js";
-import { requireEnv } from "./gh.js";
+import type { CheckDoc } from "./checks-data.js";
+import { type CheckTestResult, resolveSmokeChecks, runSmoke } from "./smoke.js";
 
 function gcxCheckTest(doc: CheckDoc): CheckTestResult {
   const dir = mkdtempSync(join(tmpdir(), "sm-action-smoke-"));
@@ -36,20 +35,43 @@ function setOutput(name: string, value: string): void {
   if (out) appendFileSync(out, `${name}=${value}\n`);
 }
 
-// Runs one check once (not saved) via `gcx synthetic-monitoring checks test`, after
-// optionally waiting for the target to serve the expected body. The markdown report
-// goes to stdout (tee'd into the PR comment) and the step summary; the job fails
-// unless every probe reports success.
-async function main(): Promise<void> {
-  const checkFile = requireEnv("SM_ACTION_SMOKE_CHECK_FILE");
-  const docs = parseCheckDocs(readFileSync(checkFile, "utf8"));
-  if (docs.length !== 1) {
-    throw new Error(`${checkFile} must contain exactly one check, found ${docs.length}`);
+// smoke-check-file names exactly one check; smoke-check-files takes newline-separated
+// paths or globs. Both are relative to the caller's checkout, not the action's directory.
+function loadChecks(): CheckDoc[] {
+  const file = process.env.SM_ACTION_SMOKE_CHECK_FILE;
+  const files = process.env.SM_ACTION_SMOKE_CHECK_FILES;
+  if (file && files) {
+    throw new Error("Set only one of SM_ACTION_SMOKE_CHECK_FILE (smoke-check-file) or SM_ACTION_SMOKE_CHECK_FILES.");
   }
+  if (!file && !files) {
+    throw new Error("Set SM_ACTION_SMOKE_CHECK_FILE (smoke-check-file) or SM_ACTION_SMOKE_CHECK_FILES.");
+  }
+
+  const cwd = process.env.SM_ACTION_WORKSPACE || process.cwd();
+  if (file) {
+    const docs = resolveSmokeChecks([file], cwd);
+    if (docs.length !== 1) {
+      throw new Error(`smoke-check-file must name exactly one check, found ${docs.length}; use smoke-check-files.`);
+    }
+    return docs;
+  }
+  const patterns = files!
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  return resolveSmokeChecks(patterns, cwd);
+}
+
+// Runs the checks once each (not saved) via `gcx synthetic-monitoring checks test`,
+// after optionally waiting for their targets to serve the expected body. The markdown
+// report goes to stdout, the step summary and SM_ACTION_SMOKE_REPORT_FILE; the job fails
+// unless every probe of every check reports success.
+async function main(): Promise<void> {
+  const checks = loadChecks();
 
   const waitTimeout = seconds("SM_ACTION_SMOKE_WAIT_TIMEOUT", 0);
   const out = await runSmoke({
-    check: docs[0]!,
+    checks,
     options: {
       target: process.env.SM_ACTION_SMOKE_TARGET || undefined,
       cacheBust: process.env.SM_ACTION_SMOKE_CACHE_BUST || undefined,
@@ -73,21 +95,28 @@ async function main(): Promise<void> {
     setOutput("smoke-report", reportFile);
   }
 
-  if (out.result) {
+  // One result file even for several checks: the first failure is the one worth
+  // diagnosing, and for a clean run the first check stands in for the rest.
+  const failing = out.outcomes.filter((o) => !o.evaluation.passed);
+  const primary = failing[0] ?? out.outcomes[0];
+  if (primary) {
     const resultFile = join(process.env.RUNNER_TEMP || tmpdir(), "sm-action-smoke-result.json");
-    writeFileSync(resultFile, JSON.stringify(out.result), "utf8");
+    writeFileSync(resultFile, JSON.stringify(primary.result), "utf8");
     setOutput("smoke-result", resultFile);
-    setOutput("adhoc-id", out.result.adhoc_id);
+    setOutput("adhoc-id", primary.result.adhoc_id);
   }
-  setOutput("failed-probes", out.evaluation.failed.join(","));
+  setOutput(
+    "failed-probes",
+    out.outcomes.flatMap((o) => o.evaluation.failed.map((f) => `${o.name}/${f}`)).join(","),
+  );
 
-  if (!out.evaluation.passed) {
-    const reason = !out.result
-      ? "target not ready"
-      : out.evaluation.total === 0
-        ? "no probe results"
-        : out.evaluation.failed.join(", ");
-    console.error(`::error::${docs[0]!.metadata.name}: ${reason}`);
+  for (const note of out.outcomes.flatMap((o) => o.notes)) console.error(`::warning::${note}`);
+  if (!out.passed) {
+    if (out.notReady) console.error(`::error::target not ready: ${out.notReady.join(", ")}`);
+    for (const o of failing) {
+      const reason = o.evaluation.total === 0 ? "no probe results" : o.evaluation.failed.join(", ");
+      console.error(`::error::${o.name}: ${reason}`);
+    }
     process.exitCode = 1;
   }
 }

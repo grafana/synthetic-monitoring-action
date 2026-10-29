@@ -1,13 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import YAML from "yaml";
 import { type CheckDoc, parseCheckDocs } from "./checks-data.js";
 import {
   type CheckTestResult,
   buildSmokeCheck,
   evaluateProbes,
   formatSmokeReport,
+  planSmokeCheck,
+  resolveSmokeChecks,
   runSmoke,
   waitForBody,
 } from "./smoke.js";
@@ -166,12 +170,92 @@ test("waitForBody without a regexp waits for any OK response", async () => {
   assert.equal(ok, true);
 });
 
+// --- planSmokeCheck ---
+
+const scriptedCheck = () => loadCheck("web-2004.yaml");
+
+test("planSmokeCheck applies every override to an HTTP check", () => {
+  const opts = { target: "https://preview.grafana.com/", cacheBust: "abc", bodyRegexp: "re" };
+  const plan = planSmokeCheck(httpCheck(), opts);
+  assert.deepEqual(plan.check, buildSmokeCheck(httpCheck(), opts));
+  assert.deepEqual(plan.notes, []);
+});
+
+test("planSmokeCheck runs a DNS check unmodified and says which overrides it skipped", () => {
+  const plan = planSmokeCheck(dnsCheck(), { target: "https://x.grafana.com/", cacheBust: "abc", bodyRegexp: "re" });
+  assert.deepEqual(plan.check, dnsCheck());
+  assert.equal(plan.notes.length, 1);
+  assert.match(plan.notes[0]!, /web-2003/);
+  assert.match(plan.notes[0]!, /smoke-target, smoke-cache-bust, smoke-body-regexp/);
+});
+
+test("planSmokeCheck only names the overrides that were actually set", () => {
+  const plan = planSmokeCheck(scriptedCheck(), { bodyRegexp: "re" });
+  assert.deepEqual(plan.check, scriptedCheck());
+  assert.match(plan.notes[0]!, /smoke-body-regexp/);
+  assert.doesNotMatch(plan.notes[0]!, /smoke-target|smoke-cache-bust/);
+});
+
+test("planSmokeCheck has nothing to say about a non-HTTP check without overrides", () => {
+  assert.deepEqual(planSmokeCheck(dnsCheck(), {}).notes, []);
+});
+
+// --- resolveSmokeChecks ---
+
+const names = (docs: CheckDoc[]) => docs.map((d) => d.metadata.name);
+
+test("resolveSmokeChecks expands globs, sorted", () => {
+  assert.deepEqual(names(resolveSmokeChecks(["shared-job-checks/web-200*.yaml"], fixtures)), [
+    "web-2001",
+    "web-2002",
+    "web-2003",
+    "web-2004",
+  ]);
+});
+
+test("resolveSmokeChecks de-dupes files matched by several patterns", () => {
+  const docs = resolveSmokeChecks(["shared-job-checks/web-2001.yaml", "shared-job-checks/web-200[12].yaml"], fixtures);
+  assert.deepEqual(names(docs), ["web-2001", "web-2002"]);
+});
+
+test("resolveSmokeChecks fails on a pattern that matches nothing", () => {
+  assert.throws(() => resolveSmokeChecks(["shared-job-checks/nope-*.yaml"], fixtures), /nope-\*\.yaml.*no files/);
+});
+
+function tempChecks(files: Record<string, string>): string {
+  const dir = mkdtempSync(join(tmpdir(), "smoke-resolve-"));
+  for (const [name, body] of Object.entries(files)) writeFileSync(join(dir, name), body);
+  return dir;
+}
+
+const checkYaml = (name: string) => readFileSync(join(fixtures, "shared-job-checks", "web-2001.yaml"), "utf8").replace("web-2001", name);
+
+test("resolveSmokeChecks fails on a file that doesn't hold exactly one check", () => {
+  const two = YAML.stringify([YAML.parse(checkYaml("a")), YAML.parse(checkYaml("b"))]);
+  const dir = tempChecks({ "two.yaml": two, "none.yaml": "foo: bar\n" });
+  assert.throws(() => resolveSmokeChecks(["two.yaml"], dir), /two\.yaml.*exactly one check, found 2/);
+  assert.throws(() => resolveSmokeChecks(["none.yaml"], dir), /none\.yaml.*exactly one check, found 0/);
+});
+
+test("resolveSmokeChecks fails when two files define the same check name", () => {
+  const dir = tempChecks({ "a.yaml": checkYaml("same"), "b.yaml": checkYaml("same") });
+  assert.throws(() => resolveSmokeChecks(["*.yaml"], dir), /duplicate check name "same"/);
+});
+
 // --- runSmoke ---
+
+const resultsByName: Record<string, string> = {
+  "web-2001": "all-success.json",
+  "web-2002": "one-failure.json",
+  "web-2003": "all-success.json",
+};
+
+const runByName = (doc: CheckDoc) => loadResult(resultsByName[doc.metadata.name] ?? "all-success.json");
 
 test("runSmoke runs the built check and reports a pass", async () => {
   let ran: CheckDoc | undefined;
   const out = await runSmoke({
-    check: httpCheck(),
+    checks: [httpCheck()],
     options: { cacheBust: "abc1234" },
     runCheckTest: (doc) => {
       ran = doc;
@@ -179,14 +263,20 @@ test("runSmoke runs the built check and reports a pass", async () => {
     },
   });
   assert.equal(ran!.spec.target, "https://grafana.com/?cb=abc1234");
-  assert.equal(out.evaluation.passed, true);
+  assert.equal(out.passed, true);
   assert.match(out.report, /All 3 probes passed/);
+});
+
+test("runSmoke with one check reports exactly what formatSmokeReport does", async () => {
+  const out = await runSmoke({ checks: [httpCheck()], options: {}, runCheckTest: () => loadResult("one-failure.json") });
+  assert.equal(out.report, formatSmokeReport("web-2001", loadResult("one-failure.json")));
+  assert.equal(out.passed, false);
 });
 
 test("runSmoke waits on the smoke target before running the check", async () => {
   const waited: string[] = [];
   const out = await runSmoke({
-    check: httpCheck(),
+    checks: [httpCheck()],
     options: { cacheBust: "abc1234", bodyRegexp: "abc1234" },
     wait: { timeoutMs: 1000, intervalMs: 100 },
     waitFn: async (url, re) => {
@@ -196,13 +286,13 @@ test("runSmoke waits on the smoke target before running the check", async () => 
     runCheckTest: () => loadResult("all-success.json"),
   });
   assert.deepEqual(waited, ["https://grafana.com/?cb=abc1234 abc1234"]);
-  assert.equal(out.evaluation.passed, true);
+  assert.equal(out.passed, true);
 });
 
 test("runSmoke fails without running the check when the wait times out", async () => {
   let ran = false;
   const out = await runSmoke({
-    check: httpCheck(),
+    checks: [httpCheck()],
     options: {},
     wait: { timeoutMs: 1000, intervalMs: 100 },
     waitFn: async () => false,
@@ -212,7 +302,91 @@ test("runSmoke fails without running the check when the wait times out", async (
     },
   });
   assert.equal(ran, false);
-  assert.equal(out.evaluation.passed, false);
-  assert.equal(out.result, undefined);
+  assert.equal(out.passed, false);
+  assert.deepEqual(out.outcomes, []);
+  assert.deepEqual(out.notReady, ["https://grafana.com"]);
   assert.match(out.report, /not ready after 1s/);
+});
+
+test("runSmoke runs every check even when one fails, and fails overall", async () => {
+  const ran: string[] = [];
+  const out = await runSmoke({
+    checks: [httpCheck(), loadCheck("web-2002.yaml"), dnsCheck()],
+    options: {},
+    runCheckTest: (doc) => {
+      ran.push(doc.metadata.name);
+      return runByName(doc);
+    },
+  });
+  assert.deepEqual(ran, ["web-2001", "web-2002", "web-2003"]);
+  assert.equal(out.passed, false);
+  assert.deepEqual(
+    out.outcomes.map((o) => [o.name, o.evaluation.passed]),
+    [
+      ["web-2001", true],
+      ["web-2002", false],
+      ["web-2003", true],
+    ],
+  );
+});
+
+test("runSmoke waits once per distinct HTTP target and never for a DNS check", async () => {
+  const waited: string[] = [];
+  const twin = httpCheck();
+  twin.metadata.name = "web-2001-twin";
+  await runSmoke({
+    checks: [httpCheck(), twin, loadCheck("web-2002.yaml"), dnsCheck(), scriptedCheck()],
+    options: { cacheBust: "abc" },
+    wait: { timeoutMs: 1000, intervalMs: 100 },
+    waitFn: async (url) => {
+      waited.push(url);
+      return true;
+    },
+    runCheckTest: runByName,
+  });
+  assert.deepEqual(waited.sort(), ["http://grafana.com/?cb=abc", "https://grafana.com/?cb=abc"]);
+});
+
+test("runSmoke aborts without running anything if any target isn't ready", async () => {
+  let ran = 0;
+  const out = await runSmoke({
+    checks: [httpCheck(), loadCheck("web-2002.yaml")],
+    options: {},
+    wait: { timeoutMs: 1000, intervalMs: 100 },
+    waitFn: async (url) => url.startsWith("https"),
+    runCheckTest: (doc) => {
+      ran++;
+      return runByName(doc);
+    },
+  });
+  assert.equal(ran, 0);
+  assert.equal(out.passed, false);
+  assert.deepEqual(out.notReady, ["http://grafana.com"]);
+});
+
+test("runSmoke with several checks reports a summary table and a section per check", async () => {
+  const out = await runSmoke({
+    checks: [httpCheck(), loadCheck("web-2002.yaml")],
+    options: {},
+    runCheckTest: runByName,
+  });
+  assert.match(out.report, /^## Synthetic Monitoring Smoke Test\n/);
+  assert.match(out.report, /\| web-2001 \| https:\/\/grafana\.com \| passed \(3 probes\) \|/);
+  assert.match(out.report, /\| web-2002 \| http:\/\/grafana\.com \| failed: Frankfurt=failure \|/);
+  assert.match(out.report, /1 of 2 checks failed\./);
+  assert.match(out.report, /### Synthetic Monitoring Smoke Test: `web-2001`/);
+  assert.match(out.report, /### Synthetic Monitoring Smoke Test: `web-2002`/);
+});
+
+test("runSmoke puts a skipped-override note in the report", async () => {
+  const out = await runSmoke({
+    checks: [httpCheck(), dnsCheck()],
+    options: { bodyRegexp: "abc" },
+    runCheckTest: runByName,
+  });
+  assert.match(out.report, /web-2003.*smoke-body-regexp/);
+  assert.deepEqual(
+    out.outcomes.map((o) => o.notes.length),
+    [0, 1],
+  );
 });

@@ -3,7 +3,7 @@ description: "Flags Grafana Synthetic Monitoring checks that this PR's diff may 
 
 inputs:
   mode:
-    description: "What to run: `pr-analysis` (impact, suggestions and sync, per their inputs below) or `smoke` (run smoke-check-file once against a fresh deploy)."
+    description: "What to run: `pr-analysis` (impact, suggestions and sync, per their inputs below) or `smoke` (run smoke-check-file / smoke-check-files once against a fresh deploy)."
     required: false
     default: "pr-analysis"
   anthropic-api-key:
@@ -65,23 +65,26 @@ inputs:
     required: false
     default: "false"
 
-  # Smoke test (mode: smoke): runs one check once via `gcx synthetic-monitoring checks
-  # test` — not saved, no schedule — and fails the job unless every probe succeeds.
-  # Billed like a scheduled execution on each probe.
+  # Smoke test (mode: smoke): runs each check once via `gcx synthetic-monitoring checks
+  # test` — not saved, no schedule — and fails the job unless every probe of every check
+  # succeeds. Billed like a scheduled execution on each probe of each check.
   smoke-check-file:
-    description: "YAML file with exactly one check to run once. Required for mode: smoke."
+    description: "YAML file with exactly one check to run once. Set this or smoke-check-files for mode: smoke."
+    required: false
+  smoke-check-files:
+    description: "Newline-separated paths or globs (relative to your checkout), one check per file, e.g. `sm-checks/blog-*.yaml`. A pattern that matches nothing fails the run. Set this or smoke-check-file."
     required: false
   smoke-target:
-    description: "Override the check's target, e.g. a PR preview URL."
+    description: "Override the target of HTTP checks, e.g. a PR preview URL. Other check types run as written."
     required: false
   smoke-cache-bust:
-    description: "Added to an http(s) target as a `cb` query param (e.g. github.sha) so probes skip a CDN-cached copy."
+    description: "Added to the target of HTTP checks as a `cb` query param (e.g. github.sha) so probes skip a CDN-cached copy. Other check types run as written."
     required: false
   smoke-body-regexp:
-    description: "Regexp the response body must match (HTTP checks only), appended to the check's failIfBodyNotMatchesRegexp. Also what smoke-wait-timeout waits for."
+    description: "Regexp the response body must match, appended to an HTTP check's failIfBodyNotMatchesRegexp. Also what smoke-wait-timeout waits for. Other check types run as written."
     required: false
   smoke-wait-timeout:
-    description: "Seconds to poll the target until it responds OK (and matches smoke-body-regexp, when set) before running the check. 0 skips the wait."
+    description: "Seconds to poll each distinct HTTP target until it responds OK (and matches smoke-body-regexp, when set) before running any check. 0 skips the wait."
     required: false
     default: "0"
   smoke-wait-interval:
@@ -104,16 +107,16 @@ outputs:
     description: "Total number of checks evaluated (check-impact)."
     value: ${{ steps.analyze.outputs.total-count }}
   smoke-result:
-    description: "Path to the raw `checks test` JSON (mode: smoke). Unset if the check never ran."
+    description: "Path to the raw `checks test` JSON of the first failing check, or of the first check if none failed (mode: smoke). Unset if nothing ran."
     value: ${{ steps.smoke.outputs.smoke-result }}
   smoke-report:
     description: "Path to the markdown smoke report (mode: smoke). Unset if the run failed before producing one."
     value: ${{ steps.smoke.outputs.smoke-report }}
   adhoc-id:
-    description: "Ad-hoc execution ID of the smoke run, for finding its logs (mode: smoke)."
+    description: "Ad-hoc execution ID of the check smoke-result describes, for finding its logs (mode: smoke)."
     value: ${{ steps.smoke.outputs.adhoc-id }}
   failed-probes:
-    description: "Comma-separated <probe>=<status> for every probe that didn't succeed (mode: smoke)."
+    description: "Comma-separated <check>/<probe>=<status> for every probe that didn't succeed (mode: smoke)."
     value: ${{ steps.smoke.outputs.failed-probes }}
 
 runs:
@@ -200,8 +203,10 @@ runs:
       env:
         GRAFANA_SERVER: ${{ inputs.grafana-stack-url }}
         GRAFANA_TOKEN: ${{ inputs.sm-token }}
-        # Relative to the caller's checkout, not the action's directory.
-        SM_ACTION_SMOKE_CHECK_FILE: ${{ github.workspace }}/${{ inputs.smoke-check-file }}
+        # Check paths are relative to the caller's checkout, not the action's directory.
+        SM_ACTION_WORKSPACE: ${{ github.workspace }}
+        SM_ACTION_SMOKE_CHECK_FILE: ${{ inputs.smoke-check-file }}
+        SM_ACTION_SMOKE_CHECK_FILES: ${{ inputs.smoke-check-files }}
         SM_ACTION_SMOKE_TARGET: ${{ inputs.smoke-target }}
         SM_ACTION_SMOKE_CACHE_BUST: ${{ inputs.smoke-cache-bust }}
         SM_ACTION_SMOKE_BODY_REGEXP: ${{ inputs.smoke-body-regexp }}
