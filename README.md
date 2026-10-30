@@ -40,6 +40,11 @@ Reference workflows live in [`examples/workflows/`](examples/workflows/):
 - [`pr-check.yml`](examples/workflows/pr-check.yml) - impact check and suggestions on every PR
 - [`sync-apply.yml`](examples/workflows/sync-apply.yml) - sync, only on push to `main`
 - [`everything-enabled.yml`](examples/workflows/everything-enabled.yml) - every input at once, with the caveats that implies
+- [`smoke.yml`](examples/workflows/smoke.yml) - `mode: smoke`: run checks once against a fresh deploy and fail unless every probe succeeds
+
+`mode: smoke` runs `gcx synthetic-monitoring checks test` (needs gcx v1.6.0+). On `pull_request` events it also posts the probe table as a sticky comment; set `smoke-comment: "false"` to skip that and post your own, embedding the report file at the `smoke-report` output.
+
+To smoke-test several checks, list paths or globs (one check per file) in `smoke-check-files`, e.g. `sm-checks/blog-*.yaml`; use `smoke-check-file` for a single check. All of them run, the job fails if any probe of any check fails, and one report covers them. `smoke-target`, `smoke-cache-bust` and `smoke-body-regexp` apply only to HTTP checks, so a DNS or scripted check in the same list runs as written (the report and a `::warning::` say so).
 
 ## Running locally
 
@@ -64,6 +69,7 @@ src/
   suggest.ts           # discover -> judge pipeline for suggestions
   checks-data.ts       # loading, YAML parsing, scoping
   sync.ts, sync-plan.ts  # sync entrypoint + pure diff logic
+  smoke-run.ts, smoke.ts # smoke-test entrypoint + pure check rewrite / probe gating
   post-comment.ts, gh.ts, report.ts  # CI glue (sticky comments, verdict parsing)
 examples/workflows/    # reference workflows for a consuming repo
 fixtures/              # local test data
@@ -76,3 +82,7 @@ fixtures/              # local test data
 - `check-impact` and `suggest-checks` need a PR diff, so they only work on `pull_request` events.
 - `sync-enabled` on a `pull_request` trigger applies on every push to the PR branch, not just on merge.
 - Ping, DNS and TCP checks are never flagged by `check-impact`.
+- Each `mode: smoke` run is billed like a scheduled execution on every probe of every check it runs.
+- A non-HTTP check in a smoke run isn't tied to the new build: with no overrides applied it can pass against the old one. Keep such checks out of `smoke-check-files` unless that's intended.
+- A `smoke-check-files` pattern that matches no files fails the run, and so does a check name that appears in two files.
+- `smoke-wait-timeout` matches `smoke-body-regexp` in JavaScript; the probes match it in Go's RE2. Keep the pattern simple (no lookarounds or backreferences).
